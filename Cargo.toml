@@ -14,11 +14,9 @@ clap = { version = "3.1", features = ["derive"] }
 clap-verbosity-flag = "1"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"] }
 env_logger = "~0.9.0"
-walkdir = "2.3"
 jwalk = "0.6"
-filemagic = "0.12"
 sshkeys = "0.3"
-tokio = { version = "1", features = ["full"] }
+rayon = "1.5"
 
 [profile.release]
 lto = true

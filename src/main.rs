@@ -10,10 +10,10 @@
 
 use anyhow::Result;
 use clap::Parser;
-use filemagic::Magic;
 use jwalk::WalkDir;
 use log::{debug, info, trace, warn};
-use std::process::Command;
+use rayon::prelude::*;
+use std::{fs, path::Path, process::Command};
 
 /// Options
 #[derive(Parser, Debug)]
@@ -59,46 +59,74 @@ fn main() -> Result<()> {
     debug!("Fullscan: {}", args.fullscan);
     debug!("Startdir: {}", args.startdir);
 
-    let cookie = Magic::open(Default::default()).expect("error");
-    cookie.load::<String>(&[]).expect("error");
+    // Store candidates to look at
+    let mut entries: Vec<String> = Vec::new();
 
-    trace!("Walking down {} now", args.startdir);
-    for entry in WalkDir::new(args.startdir).sort(true) {
+    trace!("Walking down {} now", &args.startdir);
+    // Collect candidates
+    for entry in WalkDir::new(&args.startdir).sort(true).skip_hidden(false) {
         let fpath = &entry.as_ref().unwrap().path();
-        if let Ok(v) = cookie.file(&entry.unwrap().path()) {
-            match v.as_ref() {
-                "PEM RSA private key" | "OpenSSH private key" => {
-                    debug!("SSH or RSA Private key found, checking ({:?}).", fpath);
-
-                    let output = Command::new("/usr/bin/ssh-keygen")
-                        .current_dir("/")
-                        .arg("-P lalaTESTkabChu9bledsshprivscan")
-                        .arg("-y")
-                        .arg("-f")
-                        .arg(fpath)
-                        .output()?;
-                    if output.status.success() {
-                        // Only keys we can successfully parse are
-                        // important. They do not have the given/any
-                        // passphrase
-                        let pubkey = sshkeys::PublicKey::from_string(&String::from_utf8_lossy(
-                            &output.stdout,
-                        ))?;
-                        println!(
-                            "Key without passphrase: {:?}, Fingerprint: {}, Size: {}bits, Typ: {}",
-                            fpath,
-                            pubkey.fingerprint(),
-                            pubkey.bits(),
-                            pubkey.key_type
-                        );
-                    } else {
-                        debug!("Not a parseable SSH key / SSH Key with passphrase");
-                    }
-                }
-                &_ => {}
-            };
+        // Check their size, SSH keys aren't that large. A 16k RSA one
+        // is slightly more than 12000 bytes
+        let size = if Path::exists(fpath) && fpath.is_file() {
+            fs::metadata(fpath)?.len()
+        } else {
+            65535
+        };
+        // No need to check directories or files too large
+        if fpath.is_dir()
+            || size >= 13000
+            || fpath.starts_with("/proc")
+            || fpath.starts_with("/dev")
+            || fpath.starts_with("/sys")
+        {
+            continue;
         }
+        // Store for future use
+        entries.push(entry.unwrap().path().to_string_lossy().to_string());
     }
+
+    // And now, check them all, using rayon to go parallel
+    entries.par_iter().for_each(move |entry| {
+        debug!("P: {:#?}", entry);
+        // Read file contents
+        let contents = fs::read_to_string(&entry).unwrap_or_else(|_| "Failed to read".to_string());
+
+        // If this string is contained, it MAY be a candidate
+        if contents.contains(&"PRIVATE KEY") {
+            debug!(
+                "Possible SSH or RSA Private key found, checking ({:?}).",
+                entry
+            );
+
+            // Call it with a fake passphrase
+            let output = Command::new("/usr/bin/ssh-keygen")
+                .current_dir("/")
+                .arg("-P lalaTESTkabChu9bledsshprivscan")
+                .arg("-y")
+                .arg("-f")
+                .arg(&entry)
+                .output()
+                .unwrap();
+            if output.status.success() {
+                // Only keys we can successfully parse are
+                // important. They do not have the given/any
+                // passphrase
+                let pubkey =
+                    sshkeys::PublicKey::from_string(&String::from_utf8_lossy(&output.stdout))
+                        .unwrap();
+                println!(
+                    "Key without passphrase: {:?}, Fingerprint: {}, Size: {}bits, Typ: {}",
+                    &entry,
+                    pubkey.fingerprint(),
+                    pubkey.bits(),
+                    pubkey.key_type
+                );
+            } else {
+                debug!("Not a parseable SSH key / SSH Key with passphrase");
+            }
+        }
+    });
 
     Ok(())
 }
