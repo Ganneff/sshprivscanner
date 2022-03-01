@@ -13,7 +13,7 @@ use clap::Parser;
 use jwalk::WalkDir;
 use log::{debug, info, trace, warn};
 use rayon::prelude::*;
-use std::{fs, path::Path, process::Command};
+use std::{fs, process::Command};
 
 /// Options
 #[derive(Parser, Debug)]
@@ -33,7 +33,7 @@ struct Args {
     ///
     /// We start here and recursively try finding SSH private keys.
     ///
-    /// When [App::fullscan] is set, the default here changes to /.
+    /// When [Args::fullscan] is set, the default here changes to /.
     #[clap(
         short,
         long,
@@ -47,6 +47,7 @@ struct Args {
     verbose: clap_verbosity_flag::Verbosity,
 }
 
+/// And off we go, check the system
 fn main() -> Result<()> {
     let args = Args::parse();
     // We like logging, set loglevel based on -v on commandline
@@ -68,7 +69,7 @@ fn main() -> Result<()> {
         let fpath = &entry.as_ref().unwrap().path();
         // Check their size, SSH keys aren't that large. A 16k RSA one
         // is slightly more than 12000 bytes
-        let size = if Path::exists(fpath) && fpath.is_file() {
+        let size = if fpath.exists() && fpath.is_file() {
             fs::metadata(fpath)?.len()
         } else {
             65535
@@ -79,6 +80,7 @@ fn main() -> Result<()> {
             || fpath.starts_with("/proc")
             || fpath.starts_with("/dev")
             || fpath.starts_with("/sys")
+            || fpath.starts_with("/run")
         {
             continue;
         }
@@ -108,10 +110,9 @@ fn main() -> Result<()> {
                 .arg(&entry)
                 .output()
                 .unwrap();
+            // If this is successful, the key is without passphrase.
             if output.status.success() {
-                // Only keys we can successfully parse are
-                // important. They do not have the given/any
-                // passphrase
+                // Lets parse the key, so we can hand out some more information about it
                 let pubkey =
                     sshkeys::PublicKey::from_string(&String::from_utf8_lossy(&output.stdout))
                         .unwrap();
